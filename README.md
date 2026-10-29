@@ -37,15 +37,25 @@ Desde Herdr, con el plugin activo:
 | `Worklog: ver día hábil anterior` | Lo mismo para el día hábil anterior (el lunes muestra el viernes). |
 | `Worklog: abrir archivo de hoy` | Regenera y abre `~/worklog/AAAA-MM-DD.md` con la app por defecto. |
 
-Para tenerlo a mano en un atajo, en el `config.toml` de Herdr:
+Herdr no tiene un menú de acciones: se usan con atajos de teclado. Agregá esto al final de `~/.config/herdr/config.toml` y aplicalo con `herdr server reload-config`:
 
 ```toml
 [[keys.command]]
-key = "prefix+w"
+key = "prefix+t"
 type = "plugin_action"
 command = "etendo.jira-worklog.today"
 description = "worklog de hoy"
+
+[[keys.command]]
+key = "prefix+y"
+type = "plugin_action"
+command = "etendo.jira-worklog.yesterday"
+description = "worklog del día hábil anterior"
 ```
+
+Con el prefijo por defecto (`ctrl+b`): `ctrl+b` y después `t` para hoy, o `y` para el día anterior. `prefix+t` y `prefix+y` están libres en la configuración por defecto; si ya los usás, elegí otras teclas.
+
+Sin atajos, desde cualquier terminal: `herdr plugin action invoke etendo.jira-worklog.today`.
 
 Además, cada vez que un agente termina un pedido, el plugin regenera el archivo del día (como mucho una vez por minuto). El archivo se va completando solo a lo largo del día.
 
