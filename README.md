@@ -12,17 +12,17 @@ No envía nada a Jira ni a ningún servidor: lee archivos locales y escribe en `
 
 ## Instalación
 
-Desde el repo publicado en GitHub:
-
 ```bash
-herdr plugin install <owner>/<repo>
+herdr plugin install valenvivaldi/herdr-jira-worklog
 ```
 
-O desde una copia local:
+Para actualizar a la última versión: `herdr plugin update etendo.jira-worklog`.
+
+Para modificarlo, trabajá sobre una copia local enlazada:
 
 ```bash
-git clone <url-del-repo> ~/herdr-plugins/jira-worklog
-herdr plugin link ~/herdr-plugins/jira-worklog
+git clone https://github.com/valenvivaldi/herdr-jira-worklog.git
+herdr plugin link "$PWD/herdr-jira-worklog"
 ```
 
 Para verificar que quedó instalado: `herdr plugin action list --plugin etendo.jira-worklog`.
