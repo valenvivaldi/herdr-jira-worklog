@@ -5,7 +5,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mods" / "jira-worklog"))
 
 import worklog  # noqa: E402
 from worklog import NO_TICKET, Session, Ticket, Turn  # noqa: E402

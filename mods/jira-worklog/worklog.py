@@ -17,14 +17,12 @@ import re
 import subprocess
 import sys
 import tempfile
-import time
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
-PLUGIN_ID = "etendo.jira-worklog"
 NO_TICKET = "Sin ticket"
 WEEKDAYS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 # Uppercase tokens that look like Jira keys but are not (UTF-8, SHA-256, ...).
@@ -133,28 +131,17 @@ def jira_cli_settings() -> Dict[str, str]:
     return found
 
 
-def config_dir() -> Optional[Path]:
-    env_dir = os.environ.get("HERDR_PLUGIN_CONFIG_DIR")
-    if env_dir:
-        return Path(env_dir)
-    herdr = os.environ.get("HERDR_BIN_PATH") or "herdr"
-    try:
-        out = subprocess.run([herdr, "plugin", "config-dir", PLUGIN_ID], capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return Path(out.stdout.strip()) if out.returncode == 0 and out.stdout.strip() else None
+def config_dir() -> Path:
+    return Path(os.environ.get("WORKLOG_CONFIG_DIR") or Path.home() / ".config" / "jira-worklog")
 
 
 def load_config() -> Config:
-    values: Dict[str, str] = {}
     cdir = config_dir()
-    if cdir is not None:
-        cfile = cdir / "config.env"
-        if not cfile.exists():
-            cdir.mkdir(parents=True, exist_ok=True)
-            cfile.write_text(DEFAULT_CONFIG, encoding="utf-8")
-        values = parse_env_file(cfile)
-    return build_config(values, jira_cli_settings())
+    cfile = cdir / "config.env"
+    if not cfile.exists():
+        cdir.mkdir(parents=True, exist_ok=True)
+        cfile.write_text(DEFAULT_CONFIG, encoding="utf-8")
+    return build_config(parse_env_file(cfile), jira_cli_settings())
 
 
 def build_config(values: Dict[str, str], jira_cli: Dict[str, str]) -> Config:
@@ -750,54 +737,10 @@ def cmd_generate(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_view(args: argparse.Namespace) -> int:
-    path = generate(parse_day(args.date or os.environ.get("WORKLOG_DATE", "today")))
-    pager = os.environ.get("WORKLOG_PAGER") or "less"
-    try:
-        return subprocess.call([pager, str(path)])
-    except OSError:
-        sys.stdout.write(path.read_text(encoding="utf-8"))
-        input("\nEnter para cerrar ")
-        return 0
-
-
 def cmd_open(args: argparse.Namespace) -> int:
     path = generate(parse_day(args.date))
     opener = "open" if sys.platform == "darwin" else "xdg-open"
     return subprocess.call([opener, str(path)])
-
-
-def cmd_show(args: argparse.Namespace) -> int:
-    """Plugin action: open the viewer as a Herdr popup for the requested day."""
-    herdr = os.environ.get("HERDR_BIN_PATH") or "herdr"
-    plugin = os.environ.get("HERDR_PLUGIN_ID") or PLUGIN_ID
-    return subprocess.call([
-        herdr, "plugin", "pane", "open", "--plugin", plugin, "--entrypoint", "view",
-        "--placement", "popup", "--width", "90%", "--height", "90%",
-        "--env", f"WORKLOG_DATE={args.date}",
-    ])
-
-
-def cmd_hook(args: argparse.Namespace) -> int:
-    """Event hook: refresh today's file when an agent finishes, at most once a minute."""
-    try:
-        event = json.loads(os.environ.get("HERDR_PLUGIN_EVENT_JSON") or "{}")
-    except ValueError:
-        event = {}
-    data = event.get("data") if isinstance(event, dict) else None
-    status = (data or {}).get("agent_status") if isinstance(data, dict) else None
-    if status not in ("done", "idle"):
-        return 0
-    state = Path(os.environ.get("HERDR_PLUGIN_STATE_DIR") or tempfile.gettempdir()) / "last-hook-run"
-    try:
-        if time.time() - state.stat().st_mtime < args.throttle:
-            return 0
-    except OSError:
-        pass
-    state.parent.mkdir(parents=True, exist_ok=True)
-    state.touch()
-    generate(date.today())
-    return 0
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -807,18 +750,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     gen.add_argument("--date", default="today", help="today | yesterday | YYYY-MM-DD")
     gen.add_argument("--print", action="store_true", help="Mostrar el contenido en vez de la ruta")
     gen.set_defaults(func=cmd_generate)
-    view = sub.add_parser("view", help="Regenerar y mostrar en el pager")
-    view.add_argument("--date", default=None)
-    view.set_defaults(func=cmd_view)
     opener = sub.add_parser("open", help="Regenerar y abrir con la app por defecto")
     opener.add_argument("--date", default="today")
     opener.set_defaults(func=cmd_open)
-    show = sub.add_parser("show", help="Abrir el visor como popup de Herdr")
-    show.add_argument("--date", default="today")
-    show.set_defaults(func=cmd_show)
-    hook = sub.add_parser("hook", help="Hook de pane.agent_status_changed")
-    hook.add_argument("--throttle", type=float, default=60.0)
-    hook.set_defaults(func=cmd_hook)
     args = parser.parse_args(argv)
     return args.func(args)
 

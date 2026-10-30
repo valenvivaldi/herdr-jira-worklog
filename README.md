@@ -1,69 +1,80 @@
 # Jira Worklog para Herdr
 
-Plugin de [Herdr](https://herdr.dev) que arma el borrador del worklog diario de Jira a partir de lo que ya hiciste con tus agentes (omp, Claude Code, Codex). Deja un archivo por día, dividido por ticket, con el tiempo repartido y un resumen de lo hecho. Vos lo revisás y lo cargás en cada ticket.
+Mod de [Herdr](https://herdr.dev) que arma el borrador del worklog diario de Jira a partir de lo que ya hiciste con tus agentes (omp, Claude Code, Codex). Deja un archivo por día, dividido por ticket, con el tiempo repartido y un resumen de lo hecho. Vos lo revisás y lo cargás en cada ticket.
 
 No envía nada a Jira ni a ningún servidor: lee archivos locales y escribe en `~/worklog/`.
 
 ## Requisitos
 
-- Herdr 0.9.5 o superior.
+- La app Herdr (`herdr-app`) 0.1.9 o superior. Ya no es un plugin del `herdr` viejo.
 - `python3` (alcanza el que trae macOS, 3.9+) y `git`.
 - Usar alguno de estos agentes: omp, Claude Code, Codex.
 
 ## Instalación
 
-```bash
-herdr plugin install valenvivaldi/herdr-jira-worklog
-```
-
-Para actualizar a la última versión: `herdr plugin update etendo.jira-worklog`.
-
-Para modificarlo, trabajá sobre una copia local enlazada:
+El mod es la carpeta `mods/jira-worklog/`. Clonás el repo y la enlazás en la carpeta de mods de Herdr, así `git pull` alcanza para actualizar:
 
 ```bash
 git clone https://github.com/valenvivaldi/herdr-jira-worklog.git
-herdr plugin link "$PWD/herdr-jira-worklog"
+ln -s "$PWD/herdr-jira-worklog/mods/jira-worklog" ~/.config/herdr-app/mods/jira-worklog
+herdr-app check ~/.config/herdr-app/mods/jira-worklog
 ```
 
-Para verificar que quedó instalado: `herdr plugin action list --plugin etendo.jira-worklog`.
+Después agregá el atajo de `keys.json` de este repo a `~/.config/herdr-app/keys.json`, dentro de `"global"` (si ya usás `cmd-shift-j`, elegí otra tecla):
+
+```json
+"cmd-shift-j": "mod.open:jira-worklog"
+```
+
+Sin atajo, desde cualquier terminal: `herdr-app do mod.open --name jira-worklog`.
+
+### Venís del plugin del Herdr viejo
+
+La configuración ahora vive en `~/.config/jira-worklog/config.env`. Si habías cambiado algo, movela:
+
+```bash
+mkdir -p ~/.config/jira-worklog
+mv ~/.config/herdr/plugins/config/etendo.jira-worklog/config.env ~/.config/jira-worklog/
+```
+
+Los atajos `prefix+t` / `prefix+y` de `~/.config/herdr/config.toml` ya no hacen nada; se pueden borrar.
 
 ## Uso
 
-Desde Herdr, con el plugin activo:
+`cmd-shift-j` abre el worklog de hoy en un diálogo, regenerado en el momento. Adentro:
 
-| Acción | Qué hace |
+| Tecla | Qué hace |
 |---|---|
-| `Worklog: ver hoy` | Regenera y muestra el worklog de hoy en un popup (`q` para cerrar). |
-| `Worklog: ver día hábil anterior` | Lo mismo para el día hábil anterior (el lunes muestra el viernes). |
-| `Worklog: abrir archivo de hoy` | Regenera y abre `~/worklog/AAAA-MM-DD.md` con la app por defecto. |
+| `t` | Worklog de hoy. |
+| `y` | Día hábil anterior (el lunes muestra el viernes). |
+| `r` | Regenerar. |
+| `o` | Abrir `~/worklog/AAAA-MM-DD.md` con la app por defecto. |
+| `Esc` | Cerrar. |
 
-Herdr no tiene un menú de acciones: se usan con atajos de teclado. Agregá esto al final de `~/.config/herdr/config.toml` y aplicalo con `herdr server reload-config`:
+### Regenerar solo cuando un agente termina
 
-```toml
-[[keys.command]]
-key = "prefix+t"
-type = "plugin_action"
-command = "etendo.jira-worklog.today"
-description = "worklog de hoy"
+Para que el archivo del día se vaya completando solo, el mod tiene que estar vivo en tu layout. Los layouts que trae Herdr no se pueden editar, así que primero clonás el tuyo (en el ejemplo, `main`):
 
-[[keys.command]]
-key = "prefix+y"
-type = "plugin_action"
-command = "etendo.jira-worklog.yesterday"
-description = "worklog del día hábil anterior"
+```bash
+herdr-app do layout.clone '{"name":"main","as":"mi-layout"}'
 ```
 
-Con el prefijo por defecto (`ctrl+b`): `ctrl+b` y después `t` para hoy, o `y` para el día anterior. `prefix+t` y `prefix+y` están libres en la configuración por defecto; si ya los usás, elegí otras teclas.
+y en `~/.config/herdr-app/layouts/mi-layout.json` agregás este bloque flotante en el nodo raíz (no dibuja nada):
 
-Sin atajos, desde cualquier terminal: `herdr plugin action invoke etendo.jira-worklog.today`.
+```json
+"floating": [
+  { "id": "jira-worklog-sync", "content": { "mod": "jira-worklog", "props": { "sync": true } }, "edge": "bottom", "align": "end" }
+]
+```
 
-Además, cada vez que un agente termina un pedido, el plugin regenera el archivo del día (como mucho una vez por minuto). El archivo se va completando solo a lo largo del día.
+Desde ahí, cada vez que un agente pasa de trabajando a terminado, se regenera el archivo de hoy, como mucho una vez por minuto (si terminan varios seguidos, corre una vez más al cumplirse el minuto). Solo funciona mientras se muestra ese layout. Un clon no recibe las actualizaciones del layout original de Herdr.
 
 También se puede correr sin Herdr:
 
 ```bash
-python3 worklog.py generate --date today --print
-python3 worklog.py generate --date 2026-10-27
+python3 mods/jira-worklog/worklog.py generate --date today --print
+python3 mods/jira-worklog/worklog.py generate --date 2026-10-27
+python3 mods/jira-worklog/worklog.py open --date yesterday
 ```
 
 ## Qué contiene el archivo
@@ -93,11 +104,7 @@ Para que salga bien sin pensar: mencioná el ticket en el primer pedido o trabaj
 
 ## Configuración
 
-La primera ejecución crea el archivo de configuración con todas las opciones comentadas. Para ver dónde quedó:
-
-```bash
-herdr plugin config-dir etendo.jira-worklog   # el archivo es config.env
-```
+La primera ejecución crea `~/.config/jira-worklog/config.env` con todas las opciones comentadas (otra carpeta: variable `WORKLOG_CONFIG_DIR`).
 
 | Clave | Por defecto | Para qué |
 |---|---|---|
