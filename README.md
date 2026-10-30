@@ -1,6 +1,6 @@
 # Jira Worklog para Herdr
 
-Mod de [Herdr](https://herdr.dev) que arma el borrador del worklog diario de Jira a partir de lo que ya hiciste con tus agentes (omp, Claude Code, Codex). Deja un archivo por día, dividido por ticket, con el tiempo repartido y un resumen de lo hecho. Vos lo revisás y lo cargás en cada ticket.
+Mod de [Herdr](https://herdr.dev) que arma el borrador del worklog diario de Jira a partir de lo que ya hiciste con tus agentes (omp, Claude Code, Codex). Deja una carpeta por día con un resumen por ticket (tiempo repartido y comentario sugerido) y un archivo por sesión con lo que hiciste en ella. Vos lo revisás y lo cargás en cada ticket.
 
 No envía nada a Jira ni a ningún servidor: lee archivos locales y escribe en `~/worklog/`.
 
@@ -41,14 +41,14 @@ Los atajos `prefix+t` / `prefix+y` de `~/.config/herdr/config.toml` ya no hacen 
 
 ## Uso
 
-`cmd-shift-j` abre el worklog de hoy en un diálogo, regenerado en el momento. Adentro:
+`cmd-shift-j` abre el resumen de hoy en un diálogo, regenerado en el momento. Adentro:
 
 | Tecla | Qué hace |
 |---|---|
 | `t` | Worklog de hoy. |
 | `y` | Día hábil anterior (el lunes muestra el viernes). |
 | `r` | Regenerar. |
-| `o` | Abrir `~/worklog/AAAA-MM-DD.md` con la app por defecto. |
+| `o` | Abrir la carpeta del día (`~/worklog/AAAA-MM-DD/`). |
 | `Esc` | Cerrar. |
 
 ### Regenerar solo cuando un agente termina
@@ -67,7 +67,7 @@ y en `~/.config/herdr-app/layouts/mi-layout.json` agregás este bloque flotante 
 ]
 ```
 
-Desde ahí, cada vez que un agente pasa de trabajando a terminado, se regenera el archivo de hoy, como mucho una vez por minuto (si terminan varios seguidos, corre una vez más al cumplirse el minuto). Solo funciona mientras se muestra ese layout. Un clon no recibe las actualizaciones del layout original de Herdr.
+Desde ahí, cada vez que un agente pasa de trabajando a terminado, se regenera la carpeta de hoy, como mucho una vez por minuto (si terminan varios seguidos, corre una vez más al cumplirse el minuto). Solo funciona mientras se muestra ese layout. Un clon no recibe las actualizaciones del layout original de Herdr.
 
 También se puede correr sin Herdr:
 
@@ -77,30 +77,38 @@ python3 mods/jira-worklog/worklog.py generate --date 2026-10-27
 python3 mods/jira-worklog/worklog.py open --date yesterday
 ```
 
-## Qué contiene el archivo
+## Qué contiene la carpeta del día
 
-Para cada ticket:
+```
+~/worklog/2026-10-30/
+  resumen.md                                   horas por ticket, para cargar en Jira
+  0915-omp-etp-1234-login-a1b2c3.md            una sesión: solo lo que hizo ese día
+  1100-claude-schema-forge-mcp-barrido-9f8e7d.md
+```
+
+**`resumen.md`**, para cada ticket:
 
 - **Tiempo**: la jornada (8h por defecto) repartida entre los tickets en proporción a la actividad de los agentes, redondeada a 15 minutos. Suma siempre la jornada completa.
 - **Comentario sugerido**: títulos de las sesiones y commits del día, como base del comentario del worklog.
 - **Commits** tuyos del día que nombran el ticket.
-- **Detalle**: hora, pedido que le hiciste al agente y primera línea de su respuesta.
+- **Sesiones**: link al archivo de cada sesión que trabajó en ese ticket.
 
 Lo que no se pudo asociar a un ticket queda en **Sin ticket**, con su actividad, pero no recibe horas.
 
-El archivo se regenera desde cero cada vez: copiá lo que necesites, no lo edites ahí.
+**Un archivo por sesión**, con su ticket, el agente y la carpeta, el tiempo activo del día y cada pedido de ese día (hora, lo que pediste y la primera línea de la respuesta). El nombre empieza con la hora en que la sesión arrancó ese día, así quedan en orden. Si retomás hoy una sesión de ayer, en la carpeta de hoy aparece su archivo solo con los pedidos de hoy; lo de ayer queda en la carpeta de ayer.
+
+La carpeta se regenera desde cero cada vez (un archivo de una sesión que renombraste se reemplaza por el del nombre nuevo): copiá lo que necesites, no la edites.
 
 ## Cómo decide el ticket
 
-Para cada pedido al agente, en este orden:
+**Lo más confiable: ponele a la sesión el nombre de su ticket** (`/rename ETP-1234 login` en omp, `/rename` en Claude Code). Si el nombre tiene una clave, esa es el ticket de toda la sesión, sin importar lo que digan los pedidos. Así una sesión es una tarea y no se mezcla con otras.
+
+Sin clave en el nombre, para cada pedido al agente, en este orden:
 
 1. Si el pedido nombra **una sola** clave (`ETP-1234`), ese ticket pasa a ser el de la sesión, también para los pedidos siguientes. Un pedido que lista varias claves no cambia el ticket.
-2. La clave del título de la sesión.
-3. La clave de la rama git (`feature/ETP-1234`).
-4. La clave en la ruta del directorio (worktrees por ticket).
-5. Último recurso: la clave más mencionada en la sesión, marcada como *ticket inferido*. Revisala.
-
-Para que salga bien sin pensar: mencioná el ticket en el primer pedido o trabajá en una rama `feature/ETP-XXXX`.
+2. La clave de la rama git (`feature/ETP-1234`).
+3. La clave en la ruta del directorio (worktrees por ticket).
+4. Último recurso: la clave más mencionada en la sesión, marcada como *ticket inferido*. Revisala.
 
 ## Configuración
 
@@ -124,7 +132,7 @@ Si tenés [jira-cli](https://github.com/ankitpokhrel/jira-cli) configurado, el p
 
 - El tiempo es una estimación proporcional, no un registro de horas reales: no ve reuniones ni trabajo hecho fuera de los agentes.
 - Solo lee los transcripts de omp, Claude Code y Codex en esta máquina.
-- El archivo incluye tus pedidos textuales a los agentes. Queda solo en tu máquina, con permisos `600`.
+- Los archivos incluyen tus pedidos textuales a los agentes. Quedan solo en tu máquina: la carpeta del día con permisos `700` y cada archivo con `600`.
 
 ## Desarrollo
 

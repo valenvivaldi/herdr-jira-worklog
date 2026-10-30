@@ -3,8 +3,9 @@
 
 Reads the transcripts that omp, Claude Code and Codex already keep on disk,
 groups the day's work by Jira key, splits the workday proportionally to the
-recorded activity and writes one Markdown file per day. Nothing is sent to
-Jira: the person copies each section into the matching ticket.
+recorded activity and writes one folder per day: a summary with the hours per
+ticket, plus one file per session with what it did that day. Nothing is sent
+to Jira: the person copies each section into the matching ticket.
 
 Python 3.9+ standard library only, so it runs on a stock macOS install.
 """
@@ -17,6 +18,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -44,7 +46,7 @@ DEFAULT_CONFIG = """\
 # Redondeo del tiempo de cada ticket, en minutos.
 #ROUND_MINUTES=15
 
-# Carpeta donde se escribe un archivo YYYY-MM-DD.md por día.
+# Carpeta donde se escribe una carpeta YYYY-MM-DD/ por día (resumen.md + un archivo por sesión).
 #OUTPUT_DIR=~/worklog
 
 # Prefijos de proyecto Jira, separados por coma (ej. ETP,EPL).
@@ -415,13 +417,18 @@ def first_key(text: str, cfg: Config) -> Optional[str]:
 def turn_tickets(session: Session, cfg: Config, current_branch: str = "") -> List[Tuple[str, bool]]:
     """Ticket for each turn, plus whether it was inferred.
 
-    A request that names exactly one key switches the session to it, and the
-    following requests keep it. A request naming several keys is a reference
-    list, not a switch. Before any switch, the session title, the git branch
-    and the working directory decide. As a last resort the key the session
-    mentions most (requests and answers) is used and flagged as inferred.
+    A key in the session's name (the title the person gives it) is the
+    session's ticket, for every turn: naming sessions after their ticket is
+    the reliable way to keep tasks apart. Without one, a request that names
+    exactly one key switches the session to it, and the following requests
+    keep it; a request naming several keys is a reference list, not a switch.
+    Before any switch, the git branch and the working directory decide. As a
+    last resort the key the session mentions most (requests and answers) is
+    used and flagged as inferred.
     """
     title_key = first_key(clean_title(session.title), cfg)
+    if title_key:
+        return [(title_key, False)] * len(session.turns)
     cwd_key = first_key(session.cwd, cfg)
     mentions: Counter = Counter()
     for turn in session.turns:
@@ -433,7 +440,7 @@ def turn_tickets(session: Session, cfg: Config, current_branch: str = "") -> Lis
         named = find_keys(turn.prompt, cfg)
         if len(named) == 1:
             carried = named[0]
-        known = carried or title_key or first_key(turn.branch or current_branch, cfg) or cwd_key
+        known = carried or first_key(turn.branch or current_branch, cfg) or cwd_key
         if known:
             tickets.append((known, False))
         else:
@@ -489,16 +496,38 @@ class Entry:
     start: datetime
     prompt: str
     result: str
+    ticket: str
+    inferred: bool
+
+
+@dataclass
+class SessionDay:
+    """One transcript's work on one day: its own file in the day's folder."""
+
     agent: str
+    path: Path
+    title: str
     workdir: str
+    cwd: str
+    first: datetime
+    activity: timedelta = timedelta(0)
+    entries: List[Entry] = field(default_factory=list)
+    file: str = ""
+
+    @property
+    def label(self) -> str:
+        return f"{self.agent} en {self.workdir}" + (f" «{self.title}»" if self.title else "")
+
+    @property
+    def tickets(self) -> List[str]:
+        return list(dict.fromkeys(e.ticket for e in self.entries))
 
 
 @dataclass
 class Ticket:
     key: str
     activity: timedelta = timedelta(0)
-    entries: List[Entry] = field(default_factory=list)
-    sessions: Dict[str, str] = field(default_factory=dict)  # transcript path -> label
+    sessions: Dict[str, str] = field(default_factory=dict)  # session file -> label
     titles: List[str] = field(default_factory=list)
     commits: List[Tuple[str, str]] = field(default_factory=list)
     minutes: int = 0
@@ -531,7 +560,19 @@ def day_commits(repo: str, lo: datetime, hi: datetime) -> List[Tuple[str, str]]:
     return commits
 
 
-def build_report(cfg: Config, day: date, now: Optional[datetime] = None) -> Dict[str, Ticket]:
+def slug(text: str, limit: int = 40) -> str:
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]+", "-", text).strip("-")[:limit].strip("-")
+
+
+def session_file_name(s: SessionDay) -> str:
+    """`0915-omp-etp-1234-fix-login-a1b2c3.md`: sorted by start, readable, unique per transcript."""
+    sid = re.sub(r"[^0-9a-z]", "", s.path.stem.lower())[-6:]
+    name = slug(s.title or s.workdir) or "sesion"
+    return f"{s.first.astimezone():%H%M}-{s.agent}-{name}-{sid}.md"
+
+
+def build_report(cfg: Config, day: date, now: Optional[datetime] = None) -> Tuple[Dict[str, Ticket], List[SessionDay]]:
     lo = datetime.combine(day, datetime.min.time()).astimezone()
     hi = lo + timedelta(days=1)
     tickets: Dict[str, Ticket] = {}
@@ -539,6 +580,7 @@ def build_report(cfg: Config, day: date, now: Optional[datetime] = None) -> Dict
     branches: Dict[str, str] = {}
     active_repos: Dict[str, None] = {}
 
+    sessions: List[SessionDay] = []
     for parser, path in transcript_files(cfg, lo):
         try:
             session = parser(path)
@@ -561,18 +603,21 @@ def build_report(cfg: Config, day: date, now: Optional[datetime] = None) -> Dict
         keys = turn_tickets(session, cfg, current_branch)
         workdir = os.path.basename(root or session.cwd) or "?"
         title = clean_title(session.title)
-        label = f"{session.agent} en {workdir}" + (f" «{title}»" if title else "")
         title_key = first_key(title, cfg)
+        sday = SessionDay(session.agent, path, title, workdir, session.cwd, max(lo, session.turns[in_day[0]].start))
+        sday.file = session_file_name(sday)
+        sessions.append(sday)
         for i in in_day:
             turn = session.turns[i]
             key, inferred = keys[i]
+            sday.activity += activity[i]
             ticket = tickets.setdefault(key, Ticket(key))
             ticket.activity += activity[i]
-            ticket.sessions[str(path)] = label + (" (ticket inferido por las menciones en la sesión)" if inferred else "")
+            ticket.sessions[sday.file] = sday.label + (" (ticket inferido por las menciones en la sesión)" if inferred else "")
             if title and title_key in (None, key) and title not in ticket.titles:
                 ticket.titles.append(title)
             if lo <= turn.start < hi:
-                ticket.entries.append(Entry(turn.start, turn.prompt, turn.result, session.agent, workdir))
+                sday.entries.append(Entry(turn.start, turn.prompt, turn.result, key, inferred))
 
     seen = set()
     for repo in active_repos:
@@ -584,7 +629,8 @@ def build_report(cfg: Config, day: date, now: Optional[datetime] = None) -> Dict
             tickets.setdefault(key, Ticket(key)).commits.append((sha, subject))
 
     distribute(tickets, cfg)
-    return tickets
+    sessions.sort(key=lambda s: (s.first, s.file))
+    return tickets, sessions
 
 
 def distribute(tickets: Dict[str, Ticket], cfg: Config) -> None:
@@ -648,7 +694,12 @@ def suggested_comment(ticket: Ticket) -> List[str]:
     return lines
 
 
+SUMMARY = "resumen.md"
+NAME_HINT = "Poné la clave en el nombre de la sesión (ej. `/rename ETP-1234 …` en omp) para que se asigne sola."
+
+
 def render(tickets: Dict[str, Ticket], cfg: Config, day: date, generated: datetime) -> str:
+    """The day's `resumen.md`: hours per ticket, what to paste in Jira, links to each session's file."""
     real = sorted((t for k, t in tickets.items() if k != NO_TICKET), key=lambda t: (-t.minutes, t.key))
     loose = tickets.get(NO_TICKET)
     out = [f"# Worklog {day.isoformat()} ({WEEKDAYS[day.weekday()]})", ""]
@@ -656,7 +707,8 @@ def render(tickets: Dict[str, Ticket], cfg: Config, day: date, generated: dateti
         out.append(f"Jornada de {fmt_minutes(cfg.workday_minutes)} repartida en {len(real)} ticket(s) según la actividad de los agentes.")
     else:
         out.append("No hay trabajo asociado a tickets de Jira en este día.")
-    out += [f"Generado {generated.strftime('%Y-%m-%d %H:%M')}. Se regenera solo: copiá cada sección a su ticket, no edites este archivo.", ""]
+    out += [f"Generado {generated.strftime('%Y-%m-%d %H:%M')}. Se regenera solo: copiá cada sección a su ticket, no edites esta carpeta.",
+            "El detalle de cada sesión está en su archivo, en esta misma carpeta.", ""]
     if real:
         out += ["| Ticket | Tiempo | Actividad registrada |", "|---|---|---|"]
         total_activity = sum((t.activity for t in real), timedelta(0))
@@ -666,9 +718,8 @@ def render(tickets: Dict[str, Ticket], cfg: Config, day: date, generated: dateti
         out.append("")
     for t in real:
         out += render_ticket(t, cfg, with_hours=True)
-    if loose and (loose.entries or loose.commits):
-        out += ["---", "", f"## {NO_TICKET} · {fmt_delta(loose.activity)} de actividad (no se reparte)", "",
-                "Mencioná la clave en el pedido al agente o trabajá en una rama `feature/ABC-123` para que se asigne sola.", ""]
+    if loose and (loose.sessions or loose.commits):
+        out += ["---", "", f"## {NO_TICKET} · {fmt_delta(loose.activity)} de actividad (no se reparte)", "", NAME_HINT, ""]
         out += render_ticket(loose, cfg, with_hours=False)[2:]
     return "\n".join(out).rstrip() + "\n"
 
@@ -683,17 +734,39 @@ def render_ticket(t: Ticket, cfg: Config, with_hours: bool) -> List[str]:
     if t.commits:
         out += ["**Commits:**", ""] + [f"- `{sha}` {subject}" for sha, subject in t.commits] + [""]
     if t.sessions:
-        out += ["**Sesiones:** " + "; ".join(sorted(set(t.sessions.values()))), ""]
-    if t.entries:
-        out += ["**Detalle:**", ""]
-        for entry in sorted(t.entries, key=lambda e: e.start):
-            stamp = entry.start.astimezone().strftime("%H:%M")
-            out.append(f"- {stamp} ({entry.agent}, {entry.workdir}) {one_line(entry.prompt, 160) or '(sin texto)'}")
-            result = one_line(entry.result, 220)
-            if result:
-                out.append(f"  → {result}")
-        out.append("")
+        out += ["**Sesiones:**", ""] + [f"- [{label}]({file})" for file, label in sorted(t.sessions.items())] + [""]
     return out
+
+
+def render_session(s: SessionDay, cfg: Config, day: date) -> str:
+    """One session's file: only what it did on `day`, so tasks never mix."""
+    tickets = s.tickets
+    real = [k for k in tickets if k != NO_TICKET]
+    def link(key: str) -> str:
+        return f"[{key}]({cfg.jira_url}/browse/{key})" if cfg.jira_url and key != NO_TICKET else key
+
+    out = [f"# {s.title or s.workdir} · {day.isoformat()}", ""]
+    out += [f"- **Ticket:** {', '.join(link(k) for k in tickets) if tickets else NO_TICKET}"]
+    if any(e.inferred for e in s.entries):
+        out[-1] += " (inferido por las menciones en la sesión: revisalo)"
+    out += [f"- **Agente:** {s.agent} en `{s.cwd or s.workdir}`",
+            f"- **Actividad del día:** {fmt_delta(s.activity)}",
+            f"- **Transcript:** `{s.path}`", ""]
+    if not real:
+        out += [NAME_HINT, ""]
+    if not s.entries:
+        out += ["Siguió trabajando un pedido de antes de este día; no hubo pedidos nuevos.", ""]
+        return "\n".join(out).rstrip() + "\n"
+    out += ["## Pedidos", ""]
+    several = len(tickets) > 1
+    for entry in s.entries:
+        stamp = entry.start.astimezone().strftime("%H:%M")
+        tag = f" · {entry.ticket}" if several else ""
+        out.append(f"- **{stamp}**{tag} {one_line(entry.prompt, 400) or '(sin texto)'}")
+        result = one_line(entry.result, 300)
+        if result:
+            out.append(f"  → {result}")
+    return "\n".join(out).rstrip() + "\n"
 
 
 # --------------------------------------------------------------------------- commands
@@ -720,12 +793,27 @@ def write_atomic(path: Path, content: str) -> None:
     os.replace(tmp, path)
 
 
+def day_dir(cfg: Config, day: date) -> Path:
+    return cfg.output_dir / day.isoformat()
+
+
 def generate(day: date, cfg: Optional[Config] = None) -> Path:
+    """Rewrites the day's folder: `resumen.md` plus one file per session; returns the summary."""
     cfg = cfg or load_config()
-    tickets = build_report(cfg, day)
-    path = cfg.output_dir / f"{day.isoformat()}.md"
-    write_atomic(path, render(tickets, cfg, day, datetime.now()))
-    return path
+    tickets, sessions = build_report(cfg, day)
+    folder = day_dir(cfg, day)
+    folder.mkdir(parents=True, exist_ok=True)
+    folder.chmod(0o700)
+    written = {SUMMARY}
+    write_atomic(folder / SUMMARY, render(tickets, cfg, day, datetime.now()))
+    for s in sessions:
+        write_atomic(folder / s.file, render_session(s, cfg, day))
+        written.add(s.file)
+    # a renamed session gets a new file name: drop the old one
+    for stale in folder.glob("*.md"):
+        if stale.name not in written:
+            stale.unlink()
+    return folder / SUMMARY
 
 
 def cmd_generate(args: argparse.Namespace) -> int:
@@ -738,19 +826,19 @@ def cmd_generate(args: argparse.Namespace) -> int:
 
 
 def cmd_open(args: argparse.Namespace) -> int:
-    path = generate(parse_day(args.date))
+    folder = generate(parse_day(args.date)).parent
     opener = "open" if sys.platform == "darwin" else "xdg-open"
-    return subprocess.call([opener, str(path)])
+    return subprocess.call([opener, str(folder)])
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="worklog", description="Borrador diario de worklog de Jira a partir de los transcripts de agentes.")
     sub = parser.add_subparsers(dest="command", required=True)
-    gen = sub.add_parser("generate", help="Regenerar el archivo de un día")
+    gen = sub.add_parser("generate", help="Regenerar la carpeta de un día")
     gen.add_argument("--date", default="today", help="today | yesterday | YYYY-MM-DD")
-    gen.add_argument("--print", action="store_true", help="Mostrar el contenido en vez de la ruta")
+    gen.add_argument("--print", action="store_true", help="Mostrar el resumen en vez de su ruta")
     gen.set_defaults(func=cmd_generate)
-    opener = sub.add_parser("open", help="Regenerar y abrir con la app por defecto")
+    opener = sub.add_parser("open", help="Regenerar y abrir la carpeta del día")
     opener.add_argument("--date", default="today")
     opener.set_defaults(func=cmd_open)
     args = parser.parse_args(argv)

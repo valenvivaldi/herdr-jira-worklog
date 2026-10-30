@@ -1,8 +1,9 @@
 import json
+import shutil
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mods" / "jira-worklog"))
@@ -62,10 +63,15 @@ class DistributeTests(unittest.TestCase):
 class TicketAttributionTests(unittest.TestCase):
     def test_single_key_in_request_switches_and_carries_over(self):
         cfg = etp_config()
-        session = session_with(["arrancamos", "pasemos a ETP-7", "dale"], title="ETP: Review ETP-5")
+        session = session_with(["arrancamos", "pasemos a ETP-7", "dale"], branch="feature/ETP-5")
         self.assertEqual(
             [k for k, _ in worklog.turn_tickets(session, cfg)], ["ETP-5", "ETP-7", "ETP-7"]
         )
+
+    def test_key_in_session_name_wins_for_the_whole_session(self):
+        cfg = etp_config()
+        session = session_with(["arrancamos", "mirá ETP-7 de paso", "dale"], title="ETP-5 login", branch="feature/ETP-9")
+        self.assertEqual(worklog.turn_tickets(session, cfg), [("ETP-5", False)] * 3)
 
     def test_request_listing_several_keys_does_not_switch(self):
         cfg = etp_config()
@@ -165,6 +171,48 @@ class ParserTests(unittest.TestCase):
         session = worklog.parse_codex(path)
         self.assertEqual(session.branch, "feature/ETP-3")
         self.assertEqual([(t.prompt, t.result) for t in session.turns], [("agregá la columna", "Agregada")])
+
+
+class DayFolderTests(unittest.TestCase):
+    def test_one_file_per_session_with_only_that_days_requests(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        omp = root / "omp" / "-w"
+        omp.mkdir(parents=True)
+        today = date.today()
+        yesterday = today - timedelta(days=1)
+
+        def stamp(day, hour):
+            return datetime.combine(day, datetime.min.time()).replace(hour=hour).astimezone().astimezone(UTC).isoformat()
+
+        def omp_session(name, title, turns):
+            records = [{"type": "session", "cwd": "/w/repo"}, {"type": "title", "title": title}]
+            for day, hour, prompt in turns:
+                records += [
+                    {"type": "message", "timestamp": stamp(day, hour), "message": {"role": "user", "content": [{"type": "text", "text": prompt}]}},
+                    {"type": "message", "timestamp": stamp(day, hour).replace(":00:00", ":05:00"), "message": {"role": "assistant", "content": [{"type": "text", "text": "hecho"}]}},
+                ]
+            (omp / f"{name}.jsonl").write_text("\n".join(json.dumps(r) for r in records) + "\n")
+
+        # resumed today: yesterday's request must not show up in today's file
+        omp_session("aaa111", "ETP-1 login", [(yesterday, 10, "pedido de ayer"), (today, 9, "pedido de hoy")])
+        omp_session("bbb222", "charla suelta", [(today, 11, "otra cosa")])
+        cfg = etp_config(OUTPUT_DIR=str(root / "out"), OMP_SESSIONS_DIR=str(root / "omp"),
+                         CLAUDE_PROJECTS_DIR=str(root / "none"), CODEX_SESSIONS_DIR=str(root / "none"))
+        folder = root / "out" / today.isoformat()
+        folder.mkdir(parents=True)
+        (folder / "0800-omp-viejo-nombre-aaa111.md").write_text("renamed since")
+
+        summary = worklog.generate(today, cfg)
+
+        files = sorted(p.name for p in folder.iterdir())
+        self.assertEqual(files, ["0900-omp-etp-1-login-aaa111.md", "1100-omp-charla-suelta-bbb222.md", "resumen.md"])
+        login = (folder / files[0]).read_text()
+        self.assertIn("pedido de hoy", login)
+        self.assertNotIn("pedido de ayer", login)
+        self.assertIn("**Ticket:** ETP-1", login)
+        self.assertNotIn("otra cosa", login)
+        self.assertIn("(1100-omp-charla-suelta-bbb222.md)", summary.read_text())
 
 
 if __name__ == "__main__":

@@ -1,7 +1,9 @@
-// Jira Worklog: the daily worklog draft built by worklog.py (next to this file).
-// Dialog (mod.open:jira-worklog): t today, y previous workday, r regenerate, o open file, Esc close.
+// Jira Worklog: the daily worklog built by worklog.py (next to this file) into ~/worklog/<day>/:
+// resumen.md (hours per ticket, shown here) plus one file per session.
+// Dialog (mod.open:jira-worklog): t today, y previous workday, r regenerate, o open the day's
+// folder, Esc close.
 // With props {sync: true} (an invisible floating block in the layout) it regenerates today's
-// file whenever an agent finishes, at most once a minute.
+// folder whenever an agent finishes, at most once a minute.
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, TextView } from "gpui-base";
@@ -148,7 +150,7 @@ export default class JiraWorklog extends View {
           .child(div().flex_1())
           .child(div().text_size(11.5).text_color(t.dim).child(this.loading ? "Regenerando…" : ""))
           .child(this.button("reload", "Regenerar  r", false, (_e, cx) => { this.load(cx); cx.notify(); }))
-          .child(this.button("open", "Abrir archivo  o", false, (_e, cx) => this.openFile(cx)))
+          .child(this.button("open", "Abrir carpeta  o", false, (_e, cx) => this.openFile(cx)))
           .child(this.button("close", "Esc", false, () => closeOverlay(props().overlay))),
       )
       .child(div().flex_1().min_h(0).rounded(9).border_1().border_color(t.border).bg(t.background).p(14).child(body));
